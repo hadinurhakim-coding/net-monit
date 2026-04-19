@@ -1,4 +1,4 @@
-<img width="1919" height="1018" alt="image" src="https://github.com/user-attachments/assets/aeedead6-91c6-4ec9-85e2-da117cc76dce" /><img width="1919" height="1018" alt="image" src="https://github.com/user-attachments/assets/45090967-5054-4bd9-b2a9-5addfd3b2bf4" /># NetMonit — Network Intelligence
+# NetMonit — Network Intelligence
 
 > Aplikasi desktop monitoring jaringan berbasis Go + Svelte, dibangun dengan Wails.
 
