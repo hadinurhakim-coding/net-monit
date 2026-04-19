@@ -5,8 +5,6 @@
 <img width="1919" height="1018" alt="image" src="https://github.com/user-attachments/assets/66f18d19-01eb-42ee-97f5-074fcedea0f2" />
 
 
-![Speed Test Screenshot](docs/speedtest-screenshot.png)
-
 ---
 
 ## Fitur Utama
