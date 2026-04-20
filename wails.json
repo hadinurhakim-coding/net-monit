@@ -9,5 +9,12 @@
   "author": {
     "name": "hadinurhakim-coding",
     "email": "hadinurhakim.coding@gmail.com"
+  },
+  "info": {
+    "companyName": "net-monit",
+    "productName": "net-monit",
+    "productVersion": "1.2.0",
+    "copyright": "Copyright 2026 hadinurhakim-coding",
+    "comments": "Network monitor with AI chat and threat classification"
   }
 }
