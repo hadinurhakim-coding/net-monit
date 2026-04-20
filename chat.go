@@ -274,7 +274,6 @@ func (a *App) StartOllama() error {
 	candidates := []string{
 		os.Getenv("LOCALAPPDATA") + `\Programs\Ollama\ollama.exe`,
 		`C:\Program Files\Ollama\ollama.exe`,
-		"ollama", // rely on PATH
 	}
 
 	var exePath string
@@ -285,7 +284,7 @@ func (a *App) StartOllama() error {
 		}
 	}
 	if exePath == "" {
-		exePath = "ollama" // last resort: PATH
+		return fmt.Errorf("Ollama not found; install it from https://ollama.com")
 	}
 
 	cmd := exec.Command(exePath, "serve")

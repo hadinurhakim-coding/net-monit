@@ -95,7 +95,7 @@ func (s *Storage) SaveHost(host string) error {
 		var entries []kv
 		_ = b.ForEach(func(k, v []byte) error {
 			var e HostEntry
-			if json.Unmarshal(v, &e) == nil {
+			if unmarshalDecrypt(v, &e) {
 				entries = append(entries, kv{key: append([]byte{}, k...), entry: e})
 			}
 			return nil
@@ -116,8 +116,12 @@ func (s *Storage) SaveHost(host string) error {
 		if err != nil {
 			return err
 		}
+		enc, err := encryptBytes(val)
+		if err != nil {
+			return err
+		}
 		key := []byte(entry.LastUsed.Format(time.RFC3339Nano))
-		if err = b.Put(key, val); err != nil {
+		if err = b.Put(key, enc); err != nil {
 			return err
 		}
 
@@ -129,7 +133,7 @@ func (s *Storage) SaveHost(host string) error {
 		var all []kve2
 		_ = b.ForEach(func(k, v []byte) error {
 			var e HostEntry
-			if json.Unmarshal(v, &e) == nil {
+			if unmarshalDecrypt(v, &e) {
 				all = append(all, kve2{key: append([]byte{}, k...), lastUsed: e.LastUsed})
 			}
 			return nil
@@ -154,7 +158,7 @@ func (s *Storage) GetHosts() ([]string, error) {
 		b := tx.Bucket(bucketHosts)
 		return b.ForEach(func(_, v []byte) error {
 			var e HostEntry
-			if json.Unmarshal(v, &e) == nil {
+			if unmarshalDecrypt(v, &e) {
 				entries = append(entries, e)
 			}
 			return nil
@@ -178,7 +182,7 @@ func (s *Storage) DeleteHost(host string) error {
 		b := tx.Bucket(bucketHosts)
 		return b.ForEach(func(k, v []byte) error {
 			var e HostEntry
-			if json.Unmarshal(v, &e) == nil && e.Host == host {
+			if unmarshalDecrypt(v, &e) && e.Host == host {
 				return b.Delete(k)
 			}
 			return nil
@@ -193,8 +197,12 @@ func (s *Storage) SaveSession(session DiagSession) error {
 		if err != nil {
 			return err
 		}
+		enc, err := encryptBytes(val)
+		if err != nil {
+			return err
+		}
 		key := []byte(session.StartedAt.UTC().Format(time.RFC3339Nano))
-		return b.Put(key, val)
+		return b.Put(key, enc)
 	})
 }
 
@@ -204,7 +212,7 @@ func (s *Storage) GetSessions() ([]DiagSession, error) {
 		b := tx.Bucket(bucketSessions)
 		return b.ForEach(func(_, v []byte) error {
 			var s DiagSession
-			if json.Unmarshal(v, &s) == nil {
+			if unmarshalDecrypt(v, &s) {
 				sessions = append(sessions, s)
 			}
 			return nil
@@ -241,8 +249,12 @@ func (s *Storage) SaveSpeedtestSession(session SpeedtestSession) error {
 		if err != nil {
 			return err
 		}
+		enc, err := encryptBytes(val)
+		if err != nil {
+			return err
+		}
 		key := []byte(session.StartedAt.UTC().Format(time.RFC3339Nano))
-		if err = b.Put(key, val); err != nil {
+		if err = b.Put(key, enc); err != nil {
 			return err
 		}
 		// trim to 50 most recent
@@ -253,7 +265,7 @@ func (s *Storage) SaveSpeedtestSession(session SpeedtestSession) error {
 		var all []kve
 		_ = b.ForEach(func(k, v []byte) error {
 			var sess SpeedtestSession
-			if json.Unmarshal(v, &sess) == nil {
+			if unmarshalDecrypt(v, &sess) {
 				all = append(all, kve{key: append([]byte{}, k...), startedAt: sess.StartedAt})
 			}
 			return nil
@@ -278,7 +290,7 @@ func (s *Storage) GetSpeedtestSessions() ([]SpeedtestSession, error) {
 		b := tx.Bucket(bucketSpeedtestSessions)
 		return b.ForEach(func(_, v []byte) error {
 			var sess SpeedtestSession
-			if json.Unmarshal(v, &sess) == nil {
+			if unmarshalDecrypt(v, &sess) {
 				sessions = append(sessions, sess)
 			}
 			return nil
@@ -324,8 +336,12 @@ func (s *Storage) SaveChatSession(session ChatSession) error {
 		if err != nil {
 			return err
 		}
+		enc, err := encryptBytes(val)
+		if err != nil {
+			return err
+		}
 		key := []byte(session.CreatedAt.UTC().Format(time.RFC3339Nano) + "_" + session.ID)
-		if err = b.Put(key, val); err != nil {
+		if err = b.Put(key, enc); err != nil {
 			return err
 		}
 		// trim to 100 most recent
@@ -336,7 +352,7 @@ func (s *Storage) SaveChatSession(session ChatSession) error {
 		var all []kve
 		_ = b.ForEach(func(k, v []byte) error {
 			var sess ChatSession
-			if json.Unmarshal(v, &sess) == nil {
+			if unmarshalDecrypt(v, &sess) {
 				all = append(all, kve{key: append([]byte{}, k...), createdAt: sess.CreatedAt})
 			}
 			return nil
@@ -361,7 +377,7 @@ func (s *Storage) GetChatSessions() ([]ChatSession, error) {
 		b := tx.Bucket(bucketChatSessions)
 		return b.ForEach(func(_, v []byte) error {
 			var sess ChatSession
-			if json.Unmarshal(v, &sess) == nil {
+			if unmarshalDecrypt(v, &sess) {
 				sessions = append(sessions, sess)
 			}
 			return nil
@@ -382,7 +398,7 @@ func (s *Storage) GetChatSession(id string) (*ChatSession, error) {
 		b := tx.Bucket(bucketChatSessions)
 		return b.ForEach(func(_, v []byte) error {
 			var sess ChatSession
-			if json.Unmarshal(v, &sess) == nil && sess.ID == id {
+			if unmarshalDecrypt(v, &sess) && sess.ID == id {
 				result = &sess
 			}
 			return nil
@@ -396,7 +412,7 @@ func (s *Storage) DeleteChatSession(id string) error {
 		b := tx.Bucket(bucketChatSessions)
 		return b.ForEach(func(k, v []byte) error {
 			var sess ChatSession
-			if json.Unmarshal(v, &sess) == nil && sess.ID == id {
+			if unmarshalDecrypt(v, &sess) && sess.ID == id {
 				return b.Delete(k)
 			}
 			return nil
