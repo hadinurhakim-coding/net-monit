@@ -25,7 +25,22 @@ const (
 	ollamaRegistryValue  = "SelectedModel"
 	chatMaxHistory       = 10
 	contextWindow5m      = 5 * time.Minute
+	agentMaxIter         = 5
+	toolDiagTimeout      = 20 * time.Second
+	toolSpeedtestTimeout = 90 * time.Second
 )
+
+// modelSupportsTools returns true for models known to support Ollama's tool-calling API.
+// Small models (1.5b) return HTTP 400 when tools are included in the request.
+func modelSupportsTools(model string) bool {
+	unsupported := []string{"1.5b", "1b", "0.5b"}
+	for _, tag := range unsupported {
+		if strings.Contains(model, tag) {
+			return false
+		}
+	}
+	return true
+}
 
 // resolveOllamaModel reads the model selected by the installer from the registry.
 // Falls back to the 1.5b model if the key is absent (manual install / dev mode).
@@ -42,18 +57,37 @@ func resolveOllamaModel() string {
 	return val
 }
 
-const systemPromptTemplate = `You are NetMonit Assistant, an expert network diagnostics AI embedded in a desktop app.
+const systemPromptTemplate = `You are NetMonit Assistant, an AI network diagnostics agent embedded in a desktop app called NetMonit.
 
-Current network context (averaged over last 5 minutes):
+## Language
+Always reply in the same language the user writes in. If the user writes in Indonesian (Bahasa Indonesia), reply in Indonesian. If in English, reply in English. Match their language naturally.
+
+## Current Network Context (averaged over last 5 minutes)
 %s
 
-Classification: %s
+## Classification
+%s
 
-Rules:
-- Answer concisely and technically. Reference specific hop numbers, latency values, and packet loss percentages when relevant.
-- If the user asks about their network, use the context above.
-- For general networking questions, answer from your knowledge.
-- Format responses with markdown when it improves clarity (tables for hop data, bullet points for steps).`
+## Behavior Rules
+
+### When the user asks about their network or internet:
+- Use the network context above and call tools if you need fresh data.
+- Reference specific hop numbers, latency values, and packet loss percentages.
+- Format with markdown: tables for hop data, bullet points for steps, code blocks for commands.
+
+### When the user makes small talk (greetings, asking how you are, etc.):
+- Respond briefly and warmly, then gently steer back to network topics.
+- Example: if user says "halo, apa kabar?" reply naturally but keep it short (1–2 sentences).
+
+### When the user asks something completely unrelated to networking or this app:
+- Politely decline and redirect. Example: "Saya hanya bisa membantu soal jaringan dan konektivitas internet. Ada yang ingin dicek?"
+- Do NOT answer questions about cooking, politics, entertainment, coding unrelated to networking, etc.
+
+### Tool use:
+- Call run_diagnostics when user wants to check/test connectivity to a host.
+- Call run_speedtest when user wants to measure internet speed.
+- Call get_network_info when user asks about their ISP or IP.
+- Do NOT call tools for general knowledge questions.`
 
 // ── Wails-exposed types ───────────────────────────────────────────────────────
 
@@ -82,19 +116,95 @@ type PullProgress struct {
 // ── Ollama API types (internal) ───────────────────────────────────────────────
 
 type ollamaMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 }
 
 type ollamaChatRequest struct {
 	Model    string          `json:"model"`
 	Messages []ollamaMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
+	Tools    []ollamaTool    `json:"tools,omitempty"`
 }
 
 type ollamaChatResponse struct {
 	Message ollamaMessage `json:"message"`
 	Done    bool          `json:"done"`
+}
+
+// ── Agent / tool-use types ────────────────────────────────────────────────────
+
+type ollamaToolFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+type ollamaTool struct {
+	Type     string             `json:"type"`
+	Function ollamaToolFunction `json:"function"`
+}
+
+type ollamaToolCallFunc struct {
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+}
+
+type ollamaToolCall struct {
+	Function ollamaToolCallFunc `json:"function"`
+}
+
+// AgentToolEvent is emitted via "chat:tool_call" to show agent progress in the UI.
+type AgentToolEvent struct {
+	SessionID string `json:"session_id"`
+	ToolName  string `json:"tool_name"`
+	Args      string `json:"args"`
+	Result    string `json:"result,omitempty"`
+	IsResult  bool   `json:"is_result"`
+}
+
+// agentTools is the set of capabilities the LLM can invoke autonomously.
+var agentTools = []ollamaTool{
+	{
+		Type: "function",
+		Function: ollamaToolFunction{
+			Name:        "run_diagnostics",
+			Description: "Run MTR network diagnostics to a target host. Returns hop-by-hop latency and packet loss. Use when the user asks to check, test, or diagnose connectivity to a specific host.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"host": map[string]any{
+						"type":        "string",
+						"description": "Target hostname or IP address (e.g. '8.8.8.8' or 'google.com')",
+					},
+				},
+				"required": []string{"host"},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: ollamaToolFunction{
+			Name:        "run_speedtest",
+			Description: "Run an internet speed test. Returns download/upload speed in Mbps, ping, and jitter. Use when the user asks to test or measure internet speed.",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+	},
+	{
+		Type: "function",
+		Function: ollamaToolFunction{
+			Name:        "get_network_info",
+			Description: "Get the user's current network: ISP/provider name, public IP address, and geographic location.",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+	},
 }
 
 type ollamaTagsResponse struct {
@@ -180,7 +290,7 @@ func (a *App) SendChatMessage(sessionID, userMessage string) error {
 			a.chatMu.Unlock()
 		}()
 
-		fullResponse, err := a.streamOllama(ctx, sessionID, ollamaMsgs)
+		fullResponse, err := a.runAgentLoop(ctx, sessionID, ollamaMsgs)
 		if err != nil {
 			if ctx.Err() != nil {
 				runtime.EventsEmit(a.ctx, "chat:chunk", ChatChunk{
@@ -320,42 +430,106 @@ func (a *App) PullDeepSeekModel() error {
 	return scanner.Err()
 }
 
-// ── Private helpers ───────────────────────────────────────────────────────────
+// ── Agent loop ────────────────────────────────────────────────────────────────
 
-// streamOllama POSTs to Ollama's chat API, reads the NDJSON stream,
-// emits each token via "chat:chunk", and returns the full response text.
-func (a *App) streamOllama(ctx context.Context, sessionID string, messages []ollamaMessage) (string, error) {
+// runAgentLoop drives the tool-use loop.
+// Each iteration streams one Ollama response; if the model requests tool calls
+// those are executed and fed back before the next iteration.
+// The final text answer is streamed via "chat:chunk" events.
+// Does NOT emit the terminal done chunk — SendChatMessage does that.
+func (a *App) runAgentLoop(ctx context.Context, sessionID string, messages []ollamaMessage) (string, error) {
+	for i := range agentMaxIter {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		// First round includes tools so the model can decide to act.
+		// After tool results are in the history, let it answer freely.
+		// Small models (1.5b) don't support tool calling — pass nil to avoid HTTP 400.
+		var tools []ollamaTool
+		if i == 0 && modelSupportsTools(resolveOllamaModel()) {
+			tools = agentTools
+		}
+
+		content, toolCalls, err := a.streamOllamaRound(ctx, sessionID, messages, tools)
+		if err != nil {
+			return content, err
+		}
+
+		if len(toolCalls) == 0 {
+			// No tool calls — final answer was already streamed.
+			return content, nil
+		}
+
+		// Append assistant's tool-call decision to conversation history.
+		messages = append(messages, ollamaMessage{
+			Role:      "assistant",
+			Content:   content,
+			ToolCalls: toolCalls,
+		})
+
+		for _, tc := range toolCalls {
+			argsJSON, _ := json.Marshal(tc.Function.Arguments)
+			argsStr := string(argsJSON)
+
+			runtime.EventsEmit(a.ctx, "chat:tool_call", AgentToolEvent{
+				SessionID: sessionID,
+				ToolName:  tc.Function.Name,
+				Args:      argsStr,
+			})
+
+			result := a.executeTool(ctx, tc.Function.Name, tc.Function.Arguments)
+
+			runtime.EventsEmit(a.ctx, "chat:tool_call", AgentToolEvent{
+				SessionID: sessionID,
+				ToolName:  tc.Function.Name,
+				Args:      argsStr,
+				Result:    result,
+				IsResult:  true,
+			})
+
+			messages = append(messages, ollamaMessage{Role: "tool", Content: result})
+		}
+	}
+	return "", fmt.Errorf("agent exceeded %d tool-call iterations", agentMaxIter)
+}
+
+// streamOllamaRound streams one Ollama response, emitting "chat:chunk" for content tokens.
+// It does NOT emit the terminal done event. Returns accumulated content and any tool calls.
+func (a *App) streamOllamaRound(ctx context.Context, sessionID string, messages []ollamaMessage, tools []ollamaTool) (string, []ollamaToolCall, error) {
 	reqBody, err := json.Marshal(ollamaChatRequest{
 		Model:    resolveOllamaModel(),
 		Messages: messages,
 		Stream:   true,
+		Tools:    tools,
 	})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		ollamaBaseURL+"/api/chat", bytes.NewReader(reqBody))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("Ollama unreachable: %w", err)
+		return "", nil, fmt.Errorf("Ollama unreachable: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Ollama returned status %d", resp.StatusCode)
+		return "", nil, fmt.Errorf("Ollama returned status %d", resp.StatusCode)
 	}
 
 	var sb strings.Builder
+	var toolCalls []ollamaToolCall
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		if ctx.Err() != nil {
-			return sb.String(), ctx.Err()
+			return sb.String(), toolCalls, ctx.Err()
 		}
 		var chunk ollamaChatResponse
 		if err := json.Unmarshal(scanner.Bytes(), &chunk); err != nil {
@@ -368,11 +542,104 @@ func (a *App) streamOllama(ctx context.Context, sessionID string, messages []oll
 				Delta:     delta,
 			})
 		}
+		if len(chunk.Message.ToolCalls) > 0 {
+			toolCalls = append(toolCalls, chunk.Message.ToolCalls...)
+		}
 		if chunk.Done {
 			break
 		}
 	}
-	return sb.String(), scanner.Err()
+	return sb.String(), toolCalls, scanner.Err()
+}
+
+// ── Tool executors ────────────────────────────────────────────────────────────
+
+func (a *App) executeTool(ctx context.Context, name string, args map[string]any) string {
+	switch name {
+	case "run_diagnostics":
+		host, _ := args["host"].(string)
+		if host == "" {
+			return `{"error": "host argument is required"}`
+		}
+		return a.toolRunDiagnostics(ctx, host)
+	case "run_speedtest":
+		return a.toolRunSpeedtest(ctx)
+	case "get_network_info":
+		return a.toolGetNetworkInfo()
+	default:
+		return fmt.Sprintf(`{"error": "unknown tool %q"}`, name)
+	}
+}
+
+func (a *App) toolRunDiagnostics(parentCtx context.Context, host string) string {
+	tctx, cancel := context.WithTimeout(parentCtx, toolDiagTimeout)
+	defer cancel()
+
+	done := make(chan struct{}, 1)
+	runner := NewMTRRunner(tctx, host, func(DiagnosticsUpdate) {})
+	go func() {
+		runner.Run()
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+	case <-tctx.Done():
+	}
+
+	hops := runner.Snapshot()
+	if len(hops) == 0 {
+		return fmt.Sprintf("No hops found for %s — host may be unreachable", host)
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "MTR diagnostics to %s (%d hops):\n", host, len(hops))
+	for _, h := range hops {
+		var loss float64
+		if h.Sent > 0 {
+			loss = float64(h.Sent-h.Recv) / float64(h.Sent) * 100
+		}
+		avg := int64(-1)
+		if h.Recv > 0 {
+			avg = h.Sum / int64(h.Recv)
+		}
+		fmt.Fprintf(&sb, "  Hop %2d  %-40s  loss=%.0f%%  avg=%dms  best=%dms  worst=%dms\n",
+			h.Nr, h.Host, loss, avg, h.Best, h.Worst)
+	}
+	return sb.String()
+}
+
+func (a *App) toolRunSpeedtest(parentCtx context.Context) string {
+	tctx, cancel := context.WithTimeout(parentCtx, toolSpeedtestTimeout)
+	defer cancel()
+
+	ch := make(chan struct{}, 1)
+	runner := NewSpeedtestRunner(tctx, "cloudflare-auto", func(SpeedtestUpdate) {})
+	go func() {
+		runner.Run()
+		ch <- struct{}{}
+	}()
+
+	select {
+	case <-ch:
+	case <-tctx.Done():
+		return "Speed test timed out or was cancelled"
+	}
+
+	r := runner.Result
+	if r.Failed {
+		return fmt.Sprintf("Speed test failed: %s", r.FailReason)
+	}
+	return fmt.Sprintf(
+		"Speed test: download=%.1f Mbps, upload=%.1f Mbps, ping=%d ms, jitter=%.1f ms, server=%s",
+		r.Download, r.Upload, r.Ping, r.Jitter, r.Server,
+	)
+}
+
+func (a *App) toolGetNetworkInfo() string {
+	ni := a.GetNetworkInfo()
+	return fmt.Sprintf("Network: ISP=%s, IP=%s, City=%s, Country=%s",
+		ni.Provider, ni.IP, ni.City, ni.Country)
 }
 
 // buildNetworkContext assembles a compact text summary of network metrics
@@ -384,8 +651,8 @@ func (a *App) buildNetworkContext() string {
 	cutoff := time.Now().Add(-contextWindow5m)
 
 	// Network info
-	sb.WriteString(fmt.Sprintf("Network: %s, %s, %s\n",
-		a.networkInfo.Provider, a.networkInfo.IP, a.networkInfo.City))
+	fmt.Fprintf(&sb, "Network: %s, %s, %s\n",
+		a.networkInfo.Provider, a.networkInfo.IP, a.networkInfo.City)
 
 	// Speedtest context
 	allST, _ := a.storage.GetSpeedtestSessions()
@@ -408,10 +675,9 @@ func (a *App) buildNetworkContext() string {
 			sumPing += s.Ping
 			sumJitter += s.Jitter
 		}
-		sb.WriteString(fmt.Sprintf(
+		fmt.Fprintf(&sb,
 			"Speedtest avg (%d tests): DL %.1f Mbps, UL %.1f Mbps, ping %d ms, jitter %.1f ms\n",
-			len(recentST), sumDL/count, sumUL/count, sumPing/int64(count), sumJitter/count,
-		))
+			len(recentST), sumDL/count, sumUL/count, sumPing/int64(count), sumJitter/count)
 	}
 
 	// Diagnostics context
@@ -441,10 +707,9 @@ func (a *App) buildNetworkContext() string {
 			}
 		}
 		if hopCount > 0 {
-			sb.WriteString(fmt.Sprintf(
+			fmt.Fprintf(&sb,
 				"Diagnostics avg (%d runs): %.1f%% loss, %d ms avg latency, %d hops\n",
-				runCount, totalLoss/float64(hopCount), totalAvg/int64(hopCount), hopCount/runCount,
-			))
+				runCount, totalLoss/float64(hopCount), totalAvg/int64(hopCount), hopCount/runCount)
 		}
 	}
 
