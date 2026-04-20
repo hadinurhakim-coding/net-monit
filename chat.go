@@ -7,7 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -245,6 +248,36 @@ func (a *App) CheckOllamaStatus() OllamaStatus {
 	status := OllamaStatus{Available: true, ModelReady: modelReady}
 	runtime.EventsEmit(a.ctx, "chat:ollama_status", status)
 	return status
+}
+
+// StartOllama launches `ollama serve` as a background process.
+// Returns an error if the ollama executable cannot be found.
+func (a *App) StartOllama() error {
+	candidates := []string{
+		os.Getenv("LOCALAPPDATA") + `\Programs\Ollama\ollama.exe`,
+		`C:\Program Files\Ollama\ollama.exe`,
+		"ollama", // rely on PATH
+	}
+
+	var exePath string
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			exePath = p
+			break
+		}
+	}
+	if exePath == "" {
+		exePath = "ollama" // last resort: PATH
+	}
+
+	cmd := exec.Command(exePath, "serve")
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("could not start Ollama: %w", err)
+	}
+	// Detach — we don't wait for it
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // PullDeepSeekModel pulls the DeepSeek R1 7B model via Ollama and streams progress.

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 
+	sp "github.com/eliben/go-sentencepiece"
 	ort "github.com/yalue/onnxruntime_go"
 )
 
@@ -30,6 +31,7 @@ type Classifier struct {
 	inputIDs  *ort.Tensor[int64]
 	attMask   *ort.Tensor[int64]
 	logits    *ort.Tensor[float32]
+	proc      *sp.Processor
 	ready     bool
 }
 
@@ -41,6 +43,16 @@ func debertaModelPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "net-monit", "models", "netmonit-classifier.onnx"), nil
+}
+
+// spiecePath returns the expected path for the SentencePiece vocabulary file.
+// The installer places it at %APPDATA%\net-monit\models\spiece.model
+func spiecePath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "net-monit", "models", "spiece.model"), nil
 }
 
 // debertaLibPath returns the expected path for onnxruntime.dll,
@@ -66,6 +78,19 @@ func NewClassifier() (*Classifier, error) {
 	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
 		return c, fmt.Errorf("ONNX model not found at %s", modelPath)
 	}
+
+	spiePath, err := spiecePath()
+	if err != nil {
+		return c, fmt.Errorf("cannot resolve spiece.model path: %w", err)
+	}
+	if _, err := os.Stat(spiePath); os.IsNotExist(err) {
+		return c, fmt.Errorf("spiece.model not found at %s", spiePath)
+	}
+	proc, err := sp.NewProcessorFromPath(spiePath)
+	if err != nil {
+		return c, fmt.Errorf("failed to load spiece.model: %w", err)
+	}
+	c.proc = proc
 
 	libPath, err := debertaLibPath()
 	if err != nil {
@@ -135,7 +160,7 @@ func (c *Classifier) Classify(networkContext string) ClassificationResult {
 
 // classifyONNX runs inference through the loaded ONNX model.
 func (c *Classifier) classifyONNX(text string) (ClassificationResult, error) {
-	tokens := simpleTokenize(text, ortSeqLen)
+	tokens := spmTokenize(c.proc, text, ortSeqLen)
 
 	idData := c.inputIDs.GetData()
 	maskData := c.attMask.GetData()
@@ -264,24 +289,22 @@ func (c *Classifier) Close() {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// simpleTokenize converts text to a fixed-length int64 token slice.
-// Uses UTF-8 byte values offset by 100 — sufficient for network context strings
-// (mostly ASCII digits, units, and keywords).
-func simpleTokenize(text string, maxLen int) []int64 {
-	tokens := make([]int64, maxLen)
-	tokens[0] = 1 // [CLS]
-	i := 1
-	for _, b := range []byte(text) {
-		if i >= maxLen-1 {
+// spmTokenize encodes text with the SentencePiece processor and wraps it
+// with DeBERTa special tokens: [CLS]=1 … [SEP]=2, padded to maxLen with 0.
+func spmTokenize(proc *sp.Processor, text string, maxLen int) []int64 {
+	ids := make([]int64, maxLen) // zero-initialised → PAD=0
+	ids[0] = 1                  // [CLS]
+
+	pos := 1
+	for _, tok := range proc.Encode(text) {
+		if pos >= maxLen-1 {
 			break
 		}
-		tokens[i] = int64(b) + 100
-		i++
+		ids[pos] = int64(tok.ID)
+		pos++
 	}
-	if i < maxLen {
-		tokens[i] = 2 // [SEP]
-	}
-	return tokens
+	ids[pos] = 2 // [SEP]
+	return ids
 }
 
 func extractFloat(text, pattern string) float64 {

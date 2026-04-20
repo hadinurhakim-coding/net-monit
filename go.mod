@@ -3,6 +3,7 @@ module net-monit
 go 1.23.0
 
 require (
+	github.com/eliben/go-sentencepiece v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/wailsapp/wails/v2 v2.12.0
 	github.com/yalue/onnxruntime_go v1.27.0
@@ -38,6 +39,7 @@ require (
 	golang.org/x/crypto v0.33.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
+	google.golang.org/protobuf v1.34.2 // indirect
 )
 
 // replace github.com/wailsapp/wails/v2 v2.12.0 => C:\Users\h4d!\go\pkg\mod

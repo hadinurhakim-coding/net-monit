@@ -10,6 +10,7 @@
     DeleteChatSession,
     StopChatStream,
     CheckOllamaStatus,
+    StartOllama,
     PullDeepSeekModel,
   } from '../../../wailsjs/go/main/App';
   import type { ChatChunk, OllamaStatus, PullProgress } from '$lib/types/chat';
@@ -178,6 +179,21 @@
     ollamaStatus = s;
   }
 
+  let startingOllama = $state(false);
+  async function startOllama() {
+    startingOllama = true;
+    try {
+      await StartOllama();
+      // Give ollama a moment to start, then check status
+      await new Promise(r => setTimeout(r, 2500));
+      await retryOllama();
+    } catch (e) {
+      errorMsg = String(e);
+    } finally {
+      startingOllama = false;
+    }
+  }
+
   async function pullModel() {
     pullProgress = { status: 'Starting download…', completed: 0, total: 0 };
     await PullDeepSeekModel();
@@ -311,12 +327,26 @@
               <span class="material-symbols-outlined text-[17px] text-amber-500 mt-0.5 shrink-0">warning</span>
               <div class="flex-1 min-w-0">
                 <p class="text-[0.78rem] font-semibold text-amber-800">Ollama is not running</p>
-                <p class="text-[0.72rem] text-amber-600 mt-0.5">Start it with: <code class="bg-amber-100 px-1 rounded">ollama serve</code></p>
+                <p class="text-[0.72rem] text-amber-600 mt-0.5">
+                  {startingOllama ? 'Starting Ollama…' : 'Click Start or run: '}
+                  {#if !startingOllama}
+                    <code class="bg-amber-100 px-1 rounded">ollama serve</code>
+                  {/if}
+                </p>
               </div>
-              <button
-                onclick={retryOllama}
-                class="shrink-0 text-[0.72rem] font-semibold text-amber-700 hover:text-amber-900 underline"
-              >Retry</button>
+              <div class="flex flex-col gap-1 shrink-0">
+                <button
+                  onclick={startOllama}
+                  disabled={startingOllama}
+                  class="text-[0.72rem] font-semibold px-2 py-0.5 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 transition-colors"
+                >
+                  {startingOllama ? '…' : 'Start'}
+                </button>
+                <button
+                  onclick={retryOllama}
+                  class="text-[0.72rem] font-semibold text-amber-700 hover:text-amber-900 underline"
+                >Retry</button>
+              </div>
             </div>
 
           {:else if ollamaStatus.available && !ollamaStatus.model_ready}
@@ -447,8 +477,8 @@
               <textarea
                 bind:value={inputText}
                 onkeydown={handleKeydown}
-                disabled={isStreaming || !ollamaStatus?.available}
-                placeholder={!ollamaStatus?.available ? 'Ollama is not running…' : 'Ask about your network…'}
+                disabled={isStreaming}
+                placeholder={!ollamaStatus?.available ? 'Ollama is not running — click Start above…' : 'Ask about your network…'}
                 rows={1}
                 class="flex-1 resize-none bg-transparent text-[0.83rem] text-slate-800 placeholder:text-slate-400
                        outline-none leading-relaxed max-h-32 overflow-y-auto disabled:opacity-50

@@ -74,6 +74,10 @@ export function StartLibreSpeedTest(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['StartLibreSpeedTest'](arg1, arg2, arg3, arg4, arg5);
 }
 
+export function StartOllama() {
+  return window['go']['main']['App']['StartOllama']();
+}
+
 export function StartSpeedtest(arg1) {
   return window['go']['main']['App']['StartSpeedtest'](arg1);
 }
