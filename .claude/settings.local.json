@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Read(//c/Users/h4d!/.claude/projects/C--Pemograman-Projek-net-monit/memory//**)",
-      "Read(//c/Users/h4d!/.claude/projects/C--Pemograman-Projek-net-monit/memory/**)"
+      "Read(//c/Users/h4d!/.claude/projects/C--Pemograman-Projek-net-monit/memory/**)",
+      "Bash(export PATH=\"$PATH:/c/Program Files \\(x86\\)/NSIS\")",
+      "Bash(gh release:*)"
     ]
   }
 }

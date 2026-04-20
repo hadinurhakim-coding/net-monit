@@ -71,6 +71,10 @@ ManifestDPIAware true
 #!uninstfinalize 'signtool --file "%1"'
 #!finalize 'signtool --file "%1"'
 
+# ── Registry key for model config ────────────────────────────────────────────
+!define NETMONIT_REG_KEY   "Software\NetMonit"
+!define NETMONIT_REG_VALUE "SelectedModel"
+
 # ── AI dependency constants ───────────────────────────────────────────────────
 
 !define OLLAMA_EXE_PATH  "$LOCALAPPDATA\Programs\Ollama\ollama.exe"
@@ -80,6 +84,67 @@ ManifestDPIAware true
 !define ONNX_MODEL_URL   "https://github.com/hadinurhakim-coding/net-monit/releases/latest/download/netmonit-classifier.onnx"
 !define ONNX_TOKEN_URL   "https://github.com/hadinurhakim-coding/net-monit/releases/latest/download/spiece.model"
 !define ONNX_MODELS_DIR  "$APPDATA\net-monit\models"
+
+# ── Macro: Detect GPU VRAM & select optimal LLM model ────────────────────────
+#
+# Uses PowerShell + WMI to query AdapterRAM from Win32_VideoController.
+# Decision:
+#   VRAM >= 10 GB  → deepseek-r1:14b
+#   VRAM >= 6 GB   → deepseek-r1:7b
+#   VRAM >= 3 GB   → deepseek-r1:1.5b  (dedicated GPU tapi kecil)
+#   No GPU / iGPU  → deepseek-r1:1.5b  (CPU mode)
+#
+# Result is written to HKCU\Software\NetMonit\SelectedModel so the Go app
+# can read it at runtime via the Windows registry.
+
+!macro DetectGPUAndSelectModel
+    DetailPrint "Detecting GPU and selecting optimal AI model..."
+
+    ; Run PowerShell to get max dedicated VRAM in MB across all video controllers
+    ; AdapterRAM is in bytes; divide by 1MB. Filter out Microsoft Basic Display (iGPU fallback).
+    nsExec::ExecToStack 'powershell.exe -NoProfile -NonInteractive -Command "\
+        $vram = (Get-WmiObject Win32_VideoController | \
+            Where-Object { $_.AdapterRAM -gt 0 -and $_.Name -notmatch ''Basic Display'' } | \
+            Measure-Object -Property AdapterRAM -Maximum).Maximum; \
+        if ($vram) { [math]::Round($vram / 1MB) } else { 0 }"'
+    Pop $0   ; exit code
+    Pop $1   ; stdout = VRAM in MB (or 0)
+
+    ; Trim whitespace/newlines from output
+    StrCpy $1 $1 -2   ; remove trailing \r\n
+
+    DetailPrint "Detected GPU VRAM: $1 MB"
+
+    ; Default fallback
+    StrCpy $2 "deepseek-r1:1.5b"
+
+    ; $1 is a string — compare numerically via IntCmp
+    IntCmp $1 10240 ModelIs14b ModelCheckNext ModelIs14b
+    ModelCheckNext:
+    IntCmp $1 6144 ModelIs7b ModelCheckSmall ModelIs7b
+    ModelCheckSmall:
+    IntCmp $1 3072 ModelIs1b ModelIs1b ModelIs1b
+    Goto WriteModel
+
+    ModelIs14b:
+        StrCpy $2 "deepseek-r1:14b"
+        DetailPrint "Selected model: deepseek-r1:14b (VRAM >= 10 GB)"
+        Goto WriteModel
+
+    ModelIs7b:
+        StrCpy $2 "deepseek-r1:7b"
+        DetailPrint "Selected model: deepseek-r1:7b (VRAM >= 6 GB)"
+        Goto WriteModel
+
+    ModelIs1b:
+        StrCpy $2 "deepseek-r1:1.5b"
+        DetailPrint "Selected model: deepseek-r1:1.5b (VRAM < 6 GB or CPU only)"
+
+    WriteModel:
+        ; Write chosen model to HKCU registry so Go app can read it
+        WriteRegStr HKCU "${NETMONIT_REG_KEY}" "${NETMONIT_REG_VALUE}" "$2"
+        DetailPrint "Model written to registry: $2"
+!macroend
 
 # ── Macro: Check & silently install Ollama ────────────────────────────────────
 #
@@ -173,17 +238,22 @@ ManifestDPIAware true
     ModelsDone:
 !macroend
 
-# ── Macro: Queue DeepSeek R1 model pull (non-blocking) ───────────────────────
+# ── Macro: Queue model pull based on GPU detection result ────────────────────
 #
-# Starts `ollama pull deepseek-r1:7b` as a background process so the
-# 4.7 GB download happens while the user starts using the app.
-# Does not block the installer — the download continues after Finish is clicked.
+# Reads the model name written by DetectGPUAndSelectModel from the registry,
+# then starts `ollama pull <model>` as a non-blocking background process.
 
 !macro PullDeepSeekModel
-    DetailPrint "Queuing DeepSeek R1 7B model download (runs in background ~4.7 GB)..."
+    ; Read the selected model back from registry
+    ReadRegStr $3 HKCU "${NETMONIT_REG_KEY}" "${NETMONIT_REG_VALUE}"
+    ${If} $3 == ""
+        StrCpy $3 "deepseek-r1:1.5b"
+    ${EndIf}
+
+    DetailPrint "Queuing $3 model download (runs in background)..."
     IfFileExists "${OLLAMA_EXE_PATH}" 0 SkipPull
-        Exec '"${OLLAMA_EXE_PATH}" pull deepseek-r1:7b'
-        DetailPrint "DeepSeek R1 pull started in background."
+        Exec '"${OLLAMA_EXE_PATH}" pull $3'
+        DetailPrint "$3 pull started in background."
     SkipPull:
 !macroend
 
@@ -219,6 +289,7 @@ Section
     !insertmacro wails.associateCustomProtocols
 
     # AI dependencies (seamless — no user interaction required)
+    !insertmacro DetectGPUAndSelectModel
     !insertmacro CheckAndInstallOllama
     !insertmacro DownloadONNXModel
     !insertmacro PullDeepSeekModel
@@ -241,6 +312,8 @@ Section "uninstall"
 
     !insertmacro wails.unassociateFiles
     !insertmacro wails.unassociateCustomProtocols
+
+    DeleteRegKey HKCU "${NETMONIT_REG_KEY}"
 
     !insertmacro wails.deleteUninstaller
 SectionEnd

@@ -15,14 +15,32 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/sys/windows/registry"
 )
 
 const (
-	ollamaBaseURL   = "http://localhost:11434"
-	ollamaModel     = "deepseek-r1:7b"
-	chatMaxHistory  = 10  // max messages sent to Ollama per request
-	contextWindow5m = 5 * time.Minute
+	ollamaBaseURL        = "http://localhost:11434"
+	ollamaModelFallback  = "deepseek-r1:1.5b"
+	ollamaRegistryKey    = `Software\NetMonit`
+	ollamaRegistryValue  = "SelectedModel"
+	chatMaxHistory       = 10
+	contextWindow5m      = 5 * time.Minute
 )
+
+// resolveOllamaModel reads the model selected by the installer from the registry.
+// Falls back to the 1.5b model if the key is absent (manual install / dev mode).
+func resolveOllamaModel() string {
+	k, err := registry.OpenKey(registry.CURRENT_USER, ollamaRegistryKey, registry.QUERY_VALUE)
+	if err != nil {
+		return ollamaModelFallback
+	}
+	defer k.Close()
+	val, _, err := k.GetStringValue(ollamaRegistryValue)
+	if err != nil || val == "" {
+		return ollamaModelFallback
+	}
+	return val
+}
 
 const systemPromptTemplate = `You are NetMonit Assistant, an expert network diagnostics AI embedded in a desktop app.
 
@@ -282,7 +300,7 @@ func (a *App) StartOllama() error {
 
 // PullDeepSeekModel pulls the DeepSeek R1 7B model via Ollama and streams progress.
 func (a *App) PullDeepSeekModel() error {
-	body, _ := json.Marshal(ollamaPullRequest{Name: ollamaModel, Stream: true})
+	body, _ := json.Marshal(ollamaPullRequest{Name: resolveOllamaModel(), Stream: true})
 	resp, err := http.Post(ollamaBaseURL+"/api/pull", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to start pull: %w", err)
@@ -309,7 +327,7 @@ func (a *App) PullDeepSeekModel() error {
 // emits each token via "chat:chunk", and returns the full response text.
 func (a *App) streamOllama(ctx context.Context, sessionID string, messages []ollamaMessage) (string, error) {
 	reqBody, err := json.Marshal(ollamaChatRequest{
-		Model:    ollamaModel,
+		Model:    resolveOllamaModel(),
 		Messages: messages,
 		Stream:   true,
 	})
