@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	bucketHosts              = []byte("hosts")
-	bucketSessions           = []byte("sessions")
-	bucketSpeedtestSessions  = []byte("speedtest_sessions")
+	bucketHosts             = []byte("hosts")
+	bucketSessions          = []byte("sessions")
+	bucketSpeedtestSessions = []byte("speedtest_sessions")
+	bucketChatSessions      = []byte("chat_sessions")
 )
 
 type HostEntry struct {
@@ -65,7 +66,10 @@ func NewStorage() (*Storage, error) {
 		if _, e := tx.CreateBucketIfNotExists(bucketSessions); e != nil {
 			return e
 		}
-		_, e := tx.CreateBucketIfNotExists(bucketSpeedtestSessions)
+		if _, e := tx.CreateBucketIfNotExists(bucketSpeedtestSessions); e != nil {
+			return e
+		}
+		_, e := tx.CreateBucketIfNotExists(bucketChatSessions)
 		return e
 	})
 	if err != nil {
@@ -287,4 +291,115 @@ func (s *Storage) GetSpeedtestSessions() ([]SpeedtestSession, error) {
 		return sessions[i].StartedAt.After(sessions[j].StartedAt)
 	})
 	return sessions, nil
+}
+
+// ── Chat Storage ──────────────────────────────────────────────────────────────
+
+type ChatRole string
+
+const (
+	RoleUser      ChatRole = "user"
+	RoleAssistant ChatRole = "assistant"
+	RoleSystem    ChatRole = "system"
+)
+
+type ChatMessage struct {
+	ID        string    `json:"id"`
+	Role      ChatRole  `json:"role"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+type ChatSession struct {
+	ID        string        `json:"id"`
+	Messages  []ChatMessage `json:"messages"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
+func (s *Storage) SaveChatSession(session ChatSession) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChatSessions)
+		val, err := json.Marshal(session)
+		if err != nil {
+			return err
+		}
+		key := []byte(session.CreatedAt.UTC().Format(time.RFC3339Nano) + "_" + session.ID)
+		if err = b.Put(key, val); err != nil {
+			return err
+		}
+		// trim to 100 most recent
+		type kve struct {
+			key       []byte
+			createdAt time.Time
+		}
+		var all []kve
+		_ = b.ForEach(func(k, v []byte) error {
+			var sess ChatSession
+			if json.Unmarshal(v, &sess) == nil {
+				all = append(all, kve{key: append([]byte{}, k...), createdAt: sess.CreatedAt})
+			}
+			return nil
+		})
+		if len(all) > 100 {
+			sort.Slice(all, func(i, j int) bool {
+				return all[i].createdAt.Before(all[j].createdAt)
+			})
+			for _, old := range all[:len(all)-100] {
+				if err := b.Delete(old.key); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Storage) GetChatSessions() ([]ChatSession, error) {
+	var sessions []ChatSession
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChatSessions)
+		return b.ForEach(func(_, v []byte) error {
+			var sess ChatSession
+			if json.Unmarshal(v, &sess) == nil {
+				sessions = append(sessions, sess)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
+	})
+	return sessions, nil
+}
+
+func (s *Storage) GetChatSession(id string) (*ChatSession, error) {
+	var result *ChatSession
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChatSessions)
+		return b.ForEach(func(_, v []byte) error {
+			var sess ChatSession
+			if json.Unmarshal(v, &sess) == nil && sess.ID == id {
+				result = &sess
+			}
+			return nil
+		})
+	})
+	return result, err
+}
+
+func (s *Storage) DeleteChatSession(id string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChatSessions)
+		return b.ForEach(func(k, v []byte) error {
+			var sess ChatSession
+			if json.Unmarshal(v, &sess) == nil && sess.ID == id {
+				return b.Delete(k)
+			}
+			return nil
+		})
+	})
 }

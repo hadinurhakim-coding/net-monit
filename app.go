@@ -21,6 +21,9 @@ type App struct {
 	stRunner    *SpeedtestRunner
 	stCancel    context.CancelFunc
 	networkInfo NetworkInfo
+	chatMu      sync.Mutex
+	chatCancel  context.CancelFunc
+	classifier  *Classifier
 }
 
 func NewApp() *App {
@@ -40,6 +43,12 @@ func (a *App) startup(ctx context.Context) {
 		a.networkInfo = info
 		a.stMu.Unlock()
 	}()
+
+	if c, err := NewClassifier(); err == nil {
+		a.classifier = c
+	} else {
+		runtime.LogWarning(ctx, "DeBERTa classifier unavailable: "+err.Error())
+	}
 }
 
 func (a *App) domReady(ctx context.Context) {
@@ -49,6 +58,10 @@ func (a *App) domReady(ctx context.Context) {
 func (a *App) shutdown(ctx context.Context) {
 	a.StopDiagnostics()
 	a.StopSpeedtest()
+	a.StopChatStream()
+	if a.classifier != nil {
+		a.classifier.Close()
+	}
 	if a.storage != nil {
 		a.storage.Close()
 	}

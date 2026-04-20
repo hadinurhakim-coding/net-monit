@@ -2,9 +2,11 @@
 	import './layout.css';
 	import { page } from '$app/state';
 	import { WindowMinimise, WindowToggleMaximise, Quit } from '../../wailsjs/runtime/runtime';
+	import ChatDialog from '$lib/components/ChatDialog.svelte';
 	let { children } = $props();
 	let isCollapsed = $state(false);
 	let isMaximised = $state(false);
+	let chatOpen = $state(false);
 
 	let pageTitle = $derived.by(() => {
 		const path = page.url.pathname;
@@ -163,3 +165,18 @@
 		</div>
 	</div>
 </div>
+
+<!-- Floating AI chat button — bottom-right corner -->
+<button
+	onclick={() => chatOpen = true}
+	title="Open AI Assistant"
+	class="fixed bottom-6 right-6 z-40 w-13 h-13 rounded-full shadow-lg hover:shadow-xl
+	       transition-all duration-200 hover:scale-110 active:scale-95 outline-none
+	       focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2
+	       overflow-hidden border-2 border-white"
+	aria-label="Open AI Assistant"
+>
+	<img src="/logo.png" alt="AI Chat" class="w-full h-full object-cover" />
+</button>
+
+<ChatDialog bind:open={chatOpen} />
