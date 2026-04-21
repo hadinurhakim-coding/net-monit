@@ -279,8 +279,7 @@ Section
     !insertmacro wails.files
 
     # Copy ONNX Runtime DLL (placed in build/bin/ by wails build)
-    IfFileExists "..\..\bin\onnxruntime.dll" 0 +2
-        File "..\..\bin\onnxruntime.dll"
+    File /nonfatal "..\..\bin\onnxruntime.dll"
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"

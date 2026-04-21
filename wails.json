@@ -13,7 +13,7 @@
   "info": {
     "companyName": "net-monit",
     "productName": "net-monit",
-    "productVersion": "1.2.0",
+    "productVersion": "1.3.0",
     "copyright": "Copyright 2026 hadinurhakim-coding",
     "comments": "Network monitor with AI chat and threat classification"
   }
