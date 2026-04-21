@@ -289,7 +289,9 @@
             <p class="text-[0.85rem] font-extrabold text-slate-800 tracking-tight leading-none truncate">
               {activeSession ? chatSessionTitle(activeSession) : 'NetMonit Assistant'}
             </p>
-            <p class="text-[0.68rem] text-slate-400 mt-0.5">DeepSeek R1 · DeBERTa · Agent Tools</p>
+            <p class="text-[0.68rem] text-slate-400 mt-0.5">
+              {ollamaStatus?.model_name ?? 'Loading…'} · DeBERTa{ollamaStatus?.supports_tools ? ' · Agent Tools' : ''}
+            </p>
           </div>
         </div>
 

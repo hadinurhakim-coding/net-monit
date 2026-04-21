@@ -20,7 +20,7 @@ import (
 
 const (
 	ollamaBaseURL        = "http://localhost:11434"
-	ollamaModelFallback  = "deepseek-r1:1.5b"
+	ollamaModelFallback  = "deepseek-r1:7b"
 	ollamaRegistryKey    = `Software\NetMonit`
 	ollamaRegistryValue  = "SelectedModel"
 	chatMaxHistory       = 10
@@ -30,16 +30,16 @@ const (
 	toolSpeedtestTimeout = 90 * time.Second
 )
 
-// modelSupportsTools returns true for models known to support Ollama's tool-calling API.
-// Small models (1.5b) return HTTP 400 when tools are included in the request.
+// modelSupportsTools returns true only for models known to support Ollama's tool-calling API.
+// Uses a whitelist because some large models (e.g. deepseek-r1) still return HTTP 400 with tools.
 func modelSupportsTools(model string) bool {
-	unsupported := []string{"1.5b", "1b", "0.5b"}
-	for _, tag := range unsupported {
-		if strings.Contains(model, tag) {
-			return false
+	supported := []string{"llama3", "mistral", "qwen2.5"}
+	for _, name := range supported {
+		if strings.Contains(model, name) {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // resolveOllamaModel reads the model selected by the installer from the registry.
@@ -101,9 +101,11 @@ type ChatChunk struct {
 
 // OllamaStatus is returned by CheckOllamaStatus and emitted via "chat:ollama_status".
 type OllamaStatus struct {
-	Available  bool   `json:"available"`
-	ModelReady bool   `json:"model_ready"`
-	Error      string `json:"error,omitempty"`
+	Available     bool   `json:"available"`
+	ModelReady    bool   `json:"model_ready"`
+	ModelName     string `json:"model_name"`
+	SupportsTools bool   `json:"supports_tools"`
+	Error         string `json:"error,omitempty"`
 }
 
 // PullProgress is emitted via "chat:pull_progress" during model download.
@@ -358,22 +360,24 @@ func (a *App) CheckOllamaStatus() OllamaStatus {
 	}
 	defer resp.Body.Close()
 
+	model := resolveOllamaModel()
+
 	var tags ollamaTagsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
-		status := OllamaStatus{Available: true, ModelReady: false}
+		status := OllamaStatus{Available: true, ModelReady: false, ModelName: model, SupportsTools: modelSupportsTools(model)}
 		runtime.EventsEmit(a.ctx, "chat:ollama_status", status)
 		return status
 	}
 
 	modelReady := false
 	for _, m := range tags.Models {
-		if strings.HasPrefix(m.Name, "deepseek-r1") {
+		if strings.HasPrefix(m.Name, strings.Split(model, ":")[0]) {
 			modelReady = true
 			break
 		}
 	}
 
-	status := OllamaStatus{Available: true, ModelReady: modelReady}
+	status := OllamaStatus{Available: true, ModelReady: modelReady, ModelName: model, SupportsTools: modelSupportsTools(model)}
 	runtime.EventsEmit(a.ctx, "chat:ollama_status", status)
 	return status
 }

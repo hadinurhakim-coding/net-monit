@@ -22,6 +22,8 @@ export interface ChatChunk {
 export interface OllamaStatus {
   available: boolean;
   model_ready: boolean;
+  model_name: string;
+  supports_tools: boolean;
   error?: string;
 }
 

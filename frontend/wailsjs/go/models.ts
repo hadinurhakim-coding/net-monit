@@ -193,16 +193,20 @@ export namespace main {
 	export class OllamaStatus {
 	    available: boolean;
 	    model_ready: boolean;
+	    model_name: string;
+	    supports_tools: boolean;
 	    error?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new OllamaStatus(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.available = source["available"];
 	        this.model_ready = source["model_ready"];
+	        this.model_name = source["model_name"];
+	        this.supports_tools = source["supports_tools"];
 	        this.error = source["error"];
 	    }
 	}
